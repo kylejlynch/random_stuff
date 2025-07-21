@@ -1,0 +1,657 @@
+
+from pyspark.sql import SparkSession
+from pyspark.ml.feature import VectorAssembler, StandardScaler, MinMaxScaler, PCA, Imputer
+from pyspark.ml.pipeline import Pipeline
+from pyspark.sql.functions import col, isnan, when, count, expr
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.cm as cm
+import seaborn as sns
+import pandas as pd
+import numpy as np
+
+# Initialize Spark Session with optimized configuration
+spark = SparkSession.builder \
+    .appName("FraudDetectionPCA_Optimized") \
+    .config("spark.sql.adaptive.enabled", "true") \
+    .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+    .config("spark.sql.adaptive.skewJoin.enabled", "true") \
+    .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+    .getOrCreate()
+
+# Load your fraud dataset
+# Replace 'your_fraud_dataset.csv' with your actual file path
+df = spark.read.csv("your_fraud_dataset.csv", header=True, inferSchema=True)
+
+print("Dataset shape:", df.count(), len(df.columns))
+print("\nDataset schema:")
+df.printSchema()
+
+# Optimize partitioning for better performance
+optimal_partitions = spark.sparkContext.defaultParallelism * 2
+df = df.repartition(optimal_partitions)
+
+# Display first few rows
+print("\nFirst 5 rows:")
+df.show(5)
+
+# Check for missing values
+print("\nMissing values check:")
+missing_counts = df.select([count(when(isnan(c) | col(c).isNull(), c)).alias(c) for c in df.columns])
+missing_counts.show()
+
+# Enhanced target and categorical column detection
+def find_target_column(df):
+    """Find the target column using common naming patterns"""
+    possible_target_cols = ['is_fraud', 'fraud', 'label', 'target', 'class', 'isFraud', 'Class']
+    
+    for col_name in possible_target_cols:
+        if col_name in df.columns:
+            return col_name
+    
+    # If no standard names found, look for binary columns
+    for col_name in df.columns:
+        if col_name.lower() in [name.lower() for name in possible_target_cols]:
+            return col_name
+    
+    return None
+
+def find_categorical_columns(df, exclude_cols=None):
+    """Find categorical/string columns that could be used for color coding"""
+    if exclude_cols is None:
+        exclude_cols = []
+    
+    categorical_cols = []
+    for name, dtype in df.dtypes:
+        if name not in exclude_cols:
+            if dtype in ['string', 'varchar'] or 'string' in dtype.lower():
+                categorical_cols.append(name)
+            # Also include integer columns with low cardinality (likely categorical)
+            elif dtype in ['int', 'bigint'] and name not in exclude_cols:
+                try:
+                    # Check cardinality (only sample to avoid expensive operations)
+                    distinct_count = df.select(name).distinct().count()
+                    total_count = df.count()
+                    if distinct_count <= min(50, total_count * 0.1):  # Low cardinality
+                        categorical_cols.append(name)
+                except:
+                    pass  # Skip if there's an error
+    
+    return categorical_cols
+
+target_col = find_target_column(df)
+categorical_cols = find_categorical_columns(df, exclude_cols=[target_col] if target_col else [])
+
+print(f"Target column identified: {target_col}")
+print(f"Categorical columns found: {categorical_cols}")
+print(f"These can be used for color coding in plots")
+
+# Enhanced numeric column identification
+def identify_numeric_columns(df, target_col=None):
+    """Identify numeric columns more robustly"""
+    numeric_types = ['int', 'bigint', 'float', 'double', 'decimal']
+    numeric_cols = []
+    
+    for name, dtype in df.dtypes:
+        if any(nt in dtype.lower() for nt in numeric_types):
+            if target_col is None or name != target_col:
+                numeric_cols.append(name)
+    
+    return numeric_cols
+
+numeric_cols = identify_numeric_columns(df, target_col)
+print(f"Numeric columns for PCA: {numeric_cols}")
+print(f"Number of features: {len(numeric_cols)}")
+
+# Data preprocessing
+print("\nData preprocessing...")
+
+# Handle missing values with mean imputation
+imputer = Imputer(
+    inputCols=numeric_cols,
+    outputCols=[f"{c}_imputed" for c in numeric_cols],
+    strategy="mean"
+)
+
+# Update column names to use imputed versions
+imputed_cols = [f"{c}_imputed" for c in numeric_cols]
+
+# Step 1: Vectorization
+vectorizer = VectorAssembler(
+    inputCols=imputed_cols,
+    outputCol="features",
+    handleInvalid="skip"
+)
+
+# Step 2: Scaling - Using StandardScaler for better fraud detection performance
+scaler = StandardScaler(
+    inputCol="features",
+    outputCol="scaled_features",
+    withStd=True,
+    withMean=True
+)
+
+# Alternative: MinMaxScaler (uncomment if preferred)
+# scaler = MinMaxScaler(
+#     inputCol="features",
+#     outputCol="scaled_features"
+# )
+
+# Step 3: Initial PCA with more components for 60 features
+# Start with enough components to capture most variance
+initial_components = min(40, len(numeric_cols))  # Use up to 40 components initially
+pca_initial = PCA(
+    inputCol="scaled_features",
+    outputCol="pca_features",
+    k=initial_components
+)
+
+# Create initial pipeline
+initial_pipeline = Pipeline(stages=[imputer, vectorizer, scaler, pca_initial])
+
+# Fit the initial pipeline
+print("Fitting initial pipeline to determine optimal components...")
+initial_model = initial_pipeline.fit(df)
+
+# Get initial PCA model for variance analysis
+initial_pca_model = initial_model.stages[-1]
+explained_variance = initial_pca_model.explainedVariance.toArray()
+cumulative_variance = np.cumsum(explained_variance)
+
+def find_optimal_components(explained_variance, threshold=0.95):
+    """Find optimal number of components based on variance threshold"""
+    cumulative = np.cumsum(explained_variance)
+    optimal_idx = np.where(cumulative >= threshold)[0]
+    return optimal_idx[0] + 1 if len(optimal_idx) > 0 else len(explained_variance)
+
+# Determine optimal number of components
+optimal_components_90 = find_optimal_components(explained_variance, 0.90)
+optimal_components_95 = find_optimal_components(explained_variance, 0.95)
+optimal_components_99 = find_optimal_components(explained_variance, 0.99)
+
+print(f"\nComponent Analysis:")
+print(f"Components for 90% variance: {optimal_components_90}")
+print(f"Components for 95% variance: {optimal_components_95}")
+print(f"Components for 99% variance: {optimal_components_99}")
+
+# Choose optimal number of components (defaulting to 95% variance)
+n_components = optimal_components_95
+print(f"Selected {n_components} components for final model")
+
+# Step 4: Final PCA with optimal components
+pca_final = PCA(
+    inputCol="scaled_features",
+    outputCol="pca_features",
+    k=n_components
+)
+
+# Create final pipeline
+final_pipeline = Pipeline(stages=[imputer, vectorizer, scaler, pca_final])
+
+# Fit the final pipeline
+print("Fitting final pipeline...")
+final_model = final_pipeline.fit(df)
+
+# Transform the data
+transformed_df = final_model.transform(df)
+
+# Cache the transformed data for better performance
+transformed_df.cache()
+
+# Get final PCA model for analysis
+pca_model = final_model.stages[-1]
+
+# Final explained variance
+final_explained_variance = pca_model.explainedVariance.toArray()
+final_cumulative_variance = np.cumsum(final_explained_variance)
+
+print("\nFinal PCA Results:")
+print("Explained Variance by Component:")
+for i, variance in enumerate(final_explained_variance):
+    print(f"PC{i+1}: {variance:.4f} ({variance*100:.2f}%)")
+
+print(f"\nCumulative Explained Variance:")
+for i, cum_var in enumerate(final_cumulative_variance):
+    print(f"PC1-PC{i+1}: {cum_var:.4f} ({cum_var*100:.2f}%)")
+
+# Show transformed data sample
+print("\nTransformed data with PCA features (sample):")
+transformed_df.select("pca_features").show(5, truncate=False)
+
+# Fixed function to extract PCA features from Vector objects
+def extract_pca_features_fixed(df_with_pca, n_components):
+    """Extract individual PCA components as separate columns from Vector objects"""
+    from pyspark.sql.functions import udf
+    from pyspark.sql.types import DoubleType
+    from pyspark.ml.linalg import VectorUDT, Vectors
+    
+    # Create a UDF that properly handles Vector types
+    def extract_element(vector, index):
+        if vector is not None:
+            # Convert to dense vector if sparse, then extract element
+            if hasattr(vector, 'toArray'):
+                return float(vector.toArray()[index])
+            else:
+                # Handle case where vector is already an array
+                return float(vector[index])
+        return None
+    
+    # Register UDF for each component
+    result_df = df_with_pca
+    for i in range(n_components):
+        extract_udf = udf(lambda v, idx=i: extract_element(v, idx), DoubleType())
+        result_df = result_df.withColumn(f"PC{i+1}", extract_udf(col("pca_features")))
+    
+    return result_df
+
+# Alternative method using vector_to_array (more efficient)
+def extract_pca_features_vectorized(df_with_pca, n_components):
+    """Extract individual PCA components using vector_to_array function"""
+    from pyspark.sql.functions import expr
+    
+    # First convert the vector to array, then extract elements
+    result_df = df_with_pca.withColumn("pca_array", 
+                                      expr("transform(sequence(0, size(pca_features)-1), i -> pca_features[i])"))
+    
+    # Now extract individual components from the array
+    for i in range(n_components):
+        result_df = result_df.withColumn(f"PC{i+1}", expr(f"pca_array[{i}]"))
+    
+    # Drop the temporary array column
+    result_df = result_df.drop("pca_array")
+    
+    return result_df
+
+# Extract PCA components as separate columns
+print("Extracting individual PC columns...")
+try:
+    # Try the vectorized method first (faster but may not work in all Spark versions)
+    df_with_pc_cols = extract_pca_features_vectorized(transformed_df, n_components)
+    print("Using vectorized extraction method")
+except Exception as e:
+    print(f"Vectorized method failed ({str(e)}), falling back to UDF method")
+    # Fall back to UDF method which is more compatible
+    df_with_pc_cols = extract_pca_features_fixed(transformed_df, n_components)
+
+# Show the data with individual PC columns
+print(f"\nData with individual PC columns (first 10 components):")
+pc_columns = [f"PC{i+1}" for i in range(min(10, n_components))]
+df_with_pc_cols.select(pc_columns).show(10)
+
+# Prepare data for visualization with better sampling strategy
+print("\nPreparing data for visualization...")
+total_count = df.count()
+max_sample_size = 50000
+sample_fraction = min(0.1, max_sample_size / total_count)
+
+print(f"Sampling {sample_fraction:.4f} of data for visualization")
+sample_df = df_with_pc_cols.sample(False, sample_fraction, seed=42)
+
+# Convert to Pandas for visualization - include categorical columns
+all_pc_columns = [f"PC{i+1}" for i in range(n_components)]
+columns_to_collect = all_pc_columns.copy()
+
+# Add target column if available
+if target_col:
+    columns_to_collect.append(target_col)
+
+# Add categorical columns for color coding
+available_categorical = [col for col in categorical_cols if col in df.columns]
+columns_to_collect.extend(available_categorical[:5])  # Limit to first 5 categorical columns
+
+print(f"Collecting columns for analysis: {columns_to_collect}")
+pandas_df = sample_df.select(columns_to_collect).toPandas()
+
+# Display information about categorical columns
+if available_categorical:
+    print(f"\nCategorical columns available for color coding:")
+    for cat_col in available_categorical[:5]:
+        unique_vals = pandas_df[cat_col].nunique()
+        print(f"  {cat_col}: {unique_vals} unique values")
+        if unique_vals <= 10:
+            print(f"    Values: {list(pandas_df[cat_col].unique())}")
+        else:
+            print(f"    Sample values: {list(pandas_df[cat_col].unique()[:10])}")
+else:
+    print("No categorical columns found for additional color coding")
+
+# Enhanced visualization functions
+def plot_explained_variance_comprehensive(explained_variance, cumulative_variance):
+    """Plot comprehensive explained variance analysis"""
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+    
+    components = range(1, len(explained_variance) + 1)
+    
+    # Individual explained variance
+    ax1.bar(components, explained_variance)
+    ax1.set_xlabel('Principal Component')
+    ax1.set_ylabel('Explained Variance Ratio')
+    ax1.set_title('Explained Variance by Component')
+    ax1.grid(True, alpha=0.3)
+    
+    # Cumulative explained variance
+    ax2.plot(components, cumulative_variance, 'bo-', linewidth=2, markersize=4)
+    ax2.axhline(y=0.90, color='r', linestyle='--', alpha=0.7, label='90%')
+    ax2.axhline(y=0.95, color='g', linestyle='--', alpha=0.7, label='95%')
+    ax2.axhline(y=0.99, color='orange', linestyle='--', alpha=0.7, label='99%')
+    ax2.set_xlabel('Number of Components')
+    ax2.set_ylabel('Cumulative Explained Variance Ratio')
+    ax2.set_title('Cumulative Explained Variance')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    
+    # Log scale for better visualization of small variances
+    ax3.bar(components, explained_variance)
+    ax3.set_xlabel('Principal Component')
+    ax3.set_ylabel('Explained Variance Ratio (Log Scale)')
+    ax3.set_title('Explained Variance by Component (Log Scale)')
+    ax3.set_yscale('log')
+    ax3.grid(True, alpha=0.3)
+    
+    # Elbow detection
+    ax4.plot(components, explained_variance, 'ro-', linewidth=2, markersize=4)
+    ax4.set_xlabel('Principal Component')
+    ax4.set_ylabel('Explained Variance Ratio')
+    ax4.set_title('Elbow Plot for Component Selection')
+    ax4.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_pca_analysis(pandas_df, target_col=None, categorical_cols=None, n_components_to_plot=4):
+    """Plot comprehensive PCA analysis including 3D plots"""
+    n_plots = min(n_components_to_plot, len([c for c in pandas_df.columns if c.startswith('PC')]))
+    
+    # 2D plots
+    if target_col and target_col in pandas_df.columns:
+        # Multi-panel plot with target coloring
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        axes = axes.flatten()
+        
+        for i in range(min(4, n_plots-1)):
+            scatter = axes[i].scatter(pandas_df[f'PC{i+1}'], pandas_df[f'PC{i+2}'], 
+                                    c=pandas_df[target_col], alpha=0.6, 
+                                    cmap='viridis', s=20)
+            axes[i].set_xlabel(f'PC{i+1}')
+            axes[i].set_ylabel(f'PC{i+2}')
+            axes[i].set_title(f'PC{i+1} vs PC{i+2} (Colored by {target_col})')
+            axes[i].grid(True, alpha=0.3)
+            plt.colorbar(scatter, ax=axes[i])
+        
+    else:
+        # Simple scatter plots
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        axes = axes.flatten()
+        
+        for i in range(min(4, n_plots-1)):
+            axes[i].scatter(pandas_df[f'PC{i+1}'], pandas_df[f'PC{i+2}'], alpha=0.6, s=20)
+            axes[i].set_xlabel(f'PC{i+1}')
+            axes[i].set_ylabel(f'PC{i+2}')
+            axes[i].set_title(f'PC{i+1} vs PC{i+2}')
+            axes[i].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_3d_pca_analysis(pandas_df, target_col=None, categorical_cols=None):
+    """Create 3D PCA plots for better cluster visualization"""
+    from mpl_toolkits.mplot3d import Axes3D
+    import matplotlib.cm as cm
+    
+    # Check if we have at least 3 PCs
+    if 'PC3' not in pandas_df.columns:
+        print("Need at least 3 principal components for 3D plotting")
+        return
+    
+    # Determine number of plots based on available categorical columns
+    plot_cols = []
+    if target_col and target_col in pandas_df.columns:
+        plot_cols.append(target_col)
+    
+    if categorical_cols:
+        available_cats = [col for col in categorical_cols if col in pandas_df.columns]
+        plot_cols.extend(available_cats[:3])  # Limit to 3 additional categorical columns
+    
+    if not plot_cols:
+        plot_cols = [None]  # Create at least one plot without coloring
+    
+    # Create subplots
+    n_plots = len(plot_cols)
+    cols = min(2, n_plots)
+    rows = (n_plots + 1) // 2
+    
+    fig = plt.figure(figsize=(15, 7 * rows))
+    
+    for i, color_col in enumerate(plot_cols):
+        ax = fig.add_subplot(rows, cols, i + 1, projection='3d')
+        
+        if color_col and color_col in pandas_df.columns:
+            # Handle different types of categorical data
+            unique_vals = pandas_df[color_col].unique()
+            
+            if len(unique_vals) <= 20:  # Discrete coloring for categorical data
+                colors = cm.tab20(np.linspace(0, 1, len(unique_vals)))
+                color_map = dict(zip(unique_vals, colors))
+                
+                for val in unique_vals:
+                    mask = pandas_df[color_col] == val
+                    if mask.sum() > 0:
+                        ax.scatter(pandas_df.loc[mask, 'PC1'], 
+                                 pandas_df.loc[mask, 'PC2'], 
+                                 pandas_df.loc[mask, 'PC3'],
+                                 c=[color_map[val]], 
+                                 label=f'{color_col}={val}', 
+                                 alpha=0.6, s=20)
+                
+                # Add legend if not too many categories
+                if len(unique_vals) <= 10:
+                    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+                    
+            else:  # Continuous coloring for many categories or numeric
+                scatter = ax.scatter(pandas_df['PC1'], pandas_df['PC2'], pandas_df['PC3'],
+                                   c=pandas_df[color_col], alpha=0.6, s=20, cmap='viridis')
+                plt.colorbar(scatter, ax=ax, shrink=0.5, aspect=5)
+            
+            ax.set_title(f'3D PCA Plot (Colored by {color_col})')
+        
+        else:
+            # Simple 3D plot without coloring
+            ax.scatter(pandas_df['PC1'], pandas_df['PC2'], pandas_df['PC3'], 
+                      alpha=0.6, s=20)
+            ax.set_title('3D PCA Plot')
+        
+        ax.set_xlabel('PC1')
+        ax.set_ylabel('PC2')
+        ax.set_zlabel('PC3')
+        ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+def plot_categorical_analysis(pandas_df, categorical_cols, target_col=None):
+    """Create detailed plots for each categorical variable"""
+    if not categorical_cols:
+        return
+    
+    available_cats = [col for col in categorical_cols if col in pandas_df.columns]
+    if not available_cats:
+        return
+    
+    # Create PC1 vs PC2 plots for each categorical variable
+    n_cats = len(available_cats)
+    cols = min(3, n_cats)
+    rows = (n_cats + 2) // 3
+    
+    fig, axes = plt.subplots(rows, cols, figsize=(15, 5 * rows))
+    if n_cats == 1:
+        axes = [axes]
+    elif rows == 1:
+        axes = axes.reshape(1, -1)
+    
+    axes = axes.flatten()
+    
+    for i, cat_col in enumerate(available_cats):
+        ax = axes[i]
+        
+        unique_vals = pandas_df[cat_col].unique()
+        
+        if len(unique_vals) <= 20:  # Discrete categories
+            colors = plt.cm.tab20(np.linspace(0, 1, len(unique_vals)))
+            
+            for j, val in enumerate(unique_vals):
+                mask = pandas_df[cat_col] == val
+                if mask.sum() > 0:
+                    ax.scatter(pandas_df.loc[mask, 'PC1'], 
+                             pandas_df.loc[mask, 'PC2'],
+                             c=[colors[j]], 
+                             label=f'{val}', 
+                             alpha=0.7, s=30)
+            
+            if len(unique_vals) <= 8:
+                ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        
+        else:  # Too many categories, use continuous coloring
+            scatter = ax.scatter(pandas_df['PC1'], pandas_df['PC2'],
+                               c=pd.Categorical(pandas_df[cat_col]).codes, 
+                               alpha=0.6, s=30, cmap='tab20')
+            plt.colorbar(scatter, ax=ax)
+        
+        ax.set_xlabel('PC1')
+        ax.set_ylabel('PC2')
+        ax.set_title(f'PC1 vs PC2 by {cat_col}')
+        ax.grid(True, alpha=0.3)
+    
+    # Hide unused subplots
+    for i in range(n_cats, len(axes)):
+        axes[i].set_visible(False)
+    
+    plt.tight_layout()
+    plt.show()
+
+# Enhanced feature importance analysis
+def analyze_feature_importance_comprehensive(pca_model, feature_names, n_components_to_analyze=5, n_top_features=10):
+    """Comprehensive feature importance analysis"""
+    pc_matrix = pca_model.pc.toArray()
+    
+    print(f"\nPCA Component Analysis (Top {n_top_features} features per component):")
+    print("=" * 80)
+    
+    all_loadings = []
+    
+    for i in range(min(n_components_to_analyze, pc_matrix.shape[1])):
+        loadings = pc_matrix[:, i]
+        feature_importance = list(zip(feature_names, loadings, np.abs(loadings)))
+        feature_importance.sort(key=lambda x: x[2], reverse=True)
+        
+        print(f"\nPC{i+1} (Explains {final_explained_variance[i]*100:.2f}% of variance):")
+        print("-" * 60)
+        print(f"{'Feature':<30} {'Loading':<15} {'Abs Loading':<15}")
+        print("-" * 60)
+        
+        for j, (feature, loading, abs_loading) in enumerate(feature_importance[:n_top_features]):
+            print(f"{feature:<30} {loading:>10.4f} {abs_loading:>12.4f}")
+            all_loadings.append({
+                'Component': f'PC{i+1}',
+                'Feature': feature,
+                'Loading': loading,
+                'Abs_Loading': abs_loading,
+                'Rank': j+1
+            })
+    
+    return pd.DataFrame(all_loadings)
+
+# Create visualizations
+print("Creating comprehensive visualizations...")
+
+# 1. Explained variance plots
+plot_explained_variance_comprehensive(final_explained_variance, final_cumulative_variance)
+
+# 2. Standard 2D PCA plots
+plot_pca_analysis(pandas_df, target_col, available_categorical, min(6, n_components))
+
+# 3. 3D PCA plots for better cluster separation analysis
+print("Creating 3D PCA plots for cluster analysis...")
+plot_3d_pca_analysis(pandas_df, target_col, available_categorical)
+
+# 4. Detailed categorical analysis
+if available_categorical:
+    print("Creating detailed categorical analysis plots...")
+    plot_categorical_analysis(pandas_df, available_categorical, target_col)
+
+# Perform comprehensive feature analysis
+loadings_df = analyze_feature_importance_comprehensive(
+    pca_model, numeric_cols, 
+    n_components_to_analyze=min(5, n_components), 
+    n_top_features=15
+)
+
+# Create feature importance heatmap
+if len(loadings_df) > 0:
+    print("\nCreating feature importance heatmap...")
+    pivot_loadings = loadings_df.pivot(index='Feature', columns='Component', values='Loading')
+    
+    plt.figure(figsize=(12, max(8, len(numeric_cols) * 0.3)))
+    sns.heatmap(pivot_loadings, cmap='RdBu_r', center=0, 
+                annot=True, fmt='.3f', cbar=True)
+    plt.title('PCA Loadings Heatmap - Feature Contributions to Components')
+    plt.tight_layout()
+    plt.show()
+
+# Performance metrics and recommendations
+print("\n" + "="*80)
+print("ANALYSIS SUMMARY AND RECOMMENDATIONS")
+print("="*80)
+
+print(f"Original features: {len(numeric_cols)}")
+print(f"Selected components: {n_components}")
+print(f"Variance retained: {final_cumulative_variance[-1]*100:.2f}%")
+print(f"Dimensionality reduction: {(1 - n_components/len(numeric_cols))*100:.1f}%")
+
+print(f"\nVariance Thresholds:")
+print(f"- 90% variance: {optimal_components_90} components")
+print(f"- 95% variance: {optimal_components_95} components") 
+print(f"- 99% variance: {optimal_components_99} components")
+
+# Save results with better organization
+print(f"\nSaving results...")
+
+# Save principal components
+output_columns = [f"PC{i+1}" for i in range(n_components)]
+if target_col:
+    output_columns.append(target_col)
+
+df_with_pc_cols.select(output_columns) \
+    .write.mode("overwrite").option("header", "true") \
+    .csv("fraud_pca_results")
+
+# Save feature loadings
+if len(loadings_df) > 0:
+    spark.createDataFrame(loadings_df) \
+        .write.mode("overwrite").option("header", "true") \
+        .csv("fraud_pca_loadings")
+
+# Save PCA model
+pca_model.write().overwrite().save("fraud_pca_model")
+
+# Save variance analysis
+variance_df = pd.DataFrame({
+    'Component': [f'PC{i+1}' for i in range(len(final_explained_variance))],
+    'Explained_Variance': final_explained_variance,
+    'Cumulative_Variance': final_cumulative_variance
+})
+
+spark.createDataFrame(variance_df) \
+    .write.mode("overwrite").option("header", "true") \
+    .csv("fraud_pca_variance_analysis")
+
+print("✅ PCA analysis complete!")
+print(f"📁 Transformed data saved to: fraud_pca_results")
+print(f"📁 Feature loadings saved to: fraud_pca_loadings") 
+print(f"📁 Variance analysis saved to: fraud_pca_variance_analysis")
+print(f"🤖 PCA model saved to: fraud_pca_model")
+
+# Memory cleanup
+transformed_df.unpersist()
+
+# Uncomment to stop Spark session when done
+# spark.stop()
