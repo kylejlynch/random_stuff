@@ -1,0 +1,265 @@
+import pandas as pd
+import numpy as np
+import hdbscan
+import umap
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta
+
+def daily_fraud_clustering_workflow(spark_df, target_date, feature_columns):
+    """
+    Simplified daily clustering workflow for fraud detection
+    """
+    # 1. Filter data for target date and convert to pandas
+    daily_df = spark_df.filter(
+        col('transaction_date') == target_date
+    ).toPandas()
+    
+    if len(daily_df) == 0:
+        return None
+    
+    # 2. Prepare features
+    features = daily_df[feature_columns].fillna(0)
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(features)
+    
+    # 3. HDBSCAN Clustering
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=15,      # Minimum fraud ring size
+        min_samples=5,            # Core point threshold
+        cluster_selection_epsilon=0.1,
+        metric='euclidean'
+    )
+    
+    cluster_labels = clusterer.fit_predict(features_scaled)
+    
+    # 4. UMAP for visualization
+    reducer = umap.UMAP(
+        n_neighbors=15,
+        min_dist=0.1,
+        n_components=2,
+        random_state=42
+    )
+    
+    embedding = reducer.fit_transform(features_scaled)
+    
+    # 5. Analyze results
+    results = {
+        'date': target_date,
+        'data': daily_df,
+        'features': features_scaled,
+        'clusters': cluster_labels,
+        'embedding': embedding,
+        'clusterer': clusterer,
+        'reducer': reducer
+    }
+    
+    # 6. Flag suspicious patterns
+    suspicious_clusters = find_suspicious_clusters(daily_df, cluster_labels)
+    results['alerts'] = suspicious_clusters
+    
+    return results
+
+def find_suspicious_clusters(data, cluster_labels):
+    """
+    Identify potentially fraudulent clusters
+    """
+    alerts = []
+    unique_clusters = np.unique(cluster_labels)
+    
+    for cluster_id in unique_clusters:
+        if cluster_id == -1:  # Noise cluster
+            noise_count = np.sum(cluster_labels == -1)
+            if noise_count > 50:  # High noise threshold
+                alerts.append({
+                    'type': 'High Noise',
+                    'cluster_id': -1,
+                    'count': noise_count,
+                    'description': f'{noise_count} transactions in noise cluster'
+                })
+            continue
+        
+        # Analyze regular clusters
+        mask = cluster_labels == cluster_id
+        cluster_data = data[mask]
+        
+        # Alert conditions
+        cluster_size = len(cluster_data)
+        
+        # Small, tight clusters (potential coordinated fraud)
+        if 10 <= cluster_size <= 50:
+            alerts.append({
+                'type': 'Small Tight Cluster',
+                'cluster_id': cluster_id,
+                'count': cluster_size,
+                'description': f'Cluster {cluster_id}: {cluster_size} transactions - potential coordination'
+            })
+        
+        # High-value clusters
+        if 'amount' in cluster_data.columns:
+            avg_amount = cluster_data['amount'].mean()
+            if avg_amount > data['amount'].quantile(0.95):
+                alerts.append({
+                    'type': 'High Value Cluster',
+                    'cluster_id': cluster_id,
+                    'count': cluster_size,
+                    'avg_amount': avg_amount,
+                    'description': f'Cluster {cluster_id}: High average amount ${avg_amount:.2f}'
+                })
+    
+    return alerts
+
+def visualize_daily_results(results):
+    """
+    Create visualization of daily clustering results
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    
+    data = results['data']
+    embedding = results['embedding']
+    clusters = results['clusters']
+    
+    # Plot 1: UMAP colored by cluster
+    scatter = axes[0,0].scatter(embedding[:, 0], embedding[:, 1], 
+                               c=clusters, cmap='tab20', alpha=0.6, s=20)
+    axes[0,0].set_title('UMAP Embedding - Colored by Cluster')
+    axes[0,0].set_xlabel('UMAP Dimension 1')
+    axes[0,0].set_ylabel('UMAP Dimension 2')
+    
+    # Plot 2: UMAP colored by fraud (if available)
+    if 'is_fraud' in data.columns:
+        fraud_colors = ['blue' if x == 0 else 'red' for x in data['is_fraud']]
+        axes[0,1].scatter(embedding[:, 0], embedding[:, 1], 
+                         c=fraud_colors, alpha=0.6, s=20)
+        axes[0,1].set_title('UMAP Embedding - Colored by Fraud Status')
+        axes[0,1].set_xlabel('UMAP Dimension 1')
+        axes[0,1].set_ylabel('UMAP Dimension 2')
+    
+    # Plot 3: Cluster sizes
+    unique_clusters, counts = np.unique(clusters, return_counts=True)
+    cluster_df = pd.DataFrame({'cluster': unique_clusters, 'count': counts})
+    cluster_df = cluster_df[cluster_df['cluster'] != -1]  # Exclude noise
+    
+    axes[1,0].bar(range(len(cluster_df)), cluster_df['count'])
+    axes[1,0].set_title('Cluster Sizes')
+    axes[1,0].set_xlabel('Cluster ID')
+    axes[1,0].set_ylabel('Number of Transactions')
+    axes[1,0].set_xticks(range(len(cluster_df)))
+    axes[1,0].set_xticklabels(cluster_df['cluster'])
+    
+    # Plot 4: Feature importance (cluster hierarchy)
+    if hasattr(results['clusterer'], 'condensed_tree_'):
+        # Show noise ratio and cluster count
+        noise_ratio = np.sum(clusters == -1) / len(clusters)
+        n_clusters = len(np.unique(clusters[clusters != -1]))
+        
+        axes[1,1].text(0.1, 0.8, f'Number of Clusters: {n_clusters}', 
+                      transform=axes[1,1].transAxes, fontsize=14)
+        axes[1,1].text(0.1, 0.6, f'Noise Ratio: {noise_ratio:.2%}', 
+                      transform=axes[1,1].transAxes, fontsize=14)
+        axes[1,1].text(0.1, 0.4, f'Total Transactions: {len(data)}', 
+                      transform=axes[1,1].transAxes, fontsize=14)
+        axes[1,1].set_title('Clustering Summary')
+        axes[1,1].axis('off')
+    
+    plt.tight_layout()
+    return fig
+
+def track_cluster_evolution(results_list):
+    """
+    Track how clusters evolve over multiple days
+    """
+    evolution_data = []
+    
+    for result in results_list:
+        date = result['date']
+        clusters = result['clusters']
+        
+        # Basic statistics
+        n_clusters = len(np.unique(clusters[clusters != -1]))
+        noise_ratio = np.sum(clusters == -1) / len(clusters)
+        total_transactions = len(clusters)
+        
+        evolution_data.append({
+            'date': date,
+            'n_clusters': n_clusters,
+            'noise_ratio': noise_ratio,
+            'total_transactions': total_transactions,
+            'alerts': len(result.get('alerts', []))
+        })
+    
+    evolution_df = pd.DataFrame(evolution_data)
+    
+    # Plot evolution
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    
+    # Number of clusters over time
+    axes[0,0].plot(evolution_df['date'], evolution_df['n_clusters'], 'bo-')
+    axes[0,0].set_title('Number of Clusters Over Time')
+    axes[0,0].set_ylabel('Number of Clusters')
+    axes[0,0].tick_params(axis='x', rotation=45)
+    
+    # Noise ratio over time
+    axes[0,1].plot(evolution_df['date'], evolution_df['noise_ratio'], 'ro-')
+    axes[0,1].set_title('Noise Ratio Over Time')
+    axes[0,1].set_ylabel('Noise Ratio')
+    axes[0,1].tick_params(axis='x', rotation=45)
+    
+    # Transaction volume
+    axes[1,0].plot(evolution_df['date'], evolution_df['total_transactions'], 'go-')
+    axes[1,0].set_title('Transaction Volume Over Time')
+    axes[1,0].set_ylabel('Number of Transactions')
+    axes[1,0].tick_params(axis='x', rotation=45)
+    
+    # Alert count
+    axes[1,1].plot(evolution_df['date'], evolution_df['alerts'], 'mo-')
+    axes[1,1].set_title('Alert Count Over Time')
+    axes[1,1].set_ylabel('Number of Alerts')
+    axes[1,1].tick_params(axis='x', rotation=45)
+    
+    plt.tight_layout()
+    return fig, evolution_df
+
+# Example usage
+"""
+# With your PySpark DataFrame:
+
+from pyspark.sql.functions import col
+from datetime import datetime, timedelta
+
+# Define your fraud-relevant features
+feature_columns = [
+    'amount', 'hour_of_day', 'day_of_week',
+    'merchant_risk_score', 'velocity_1h', 'velocity_24h',
+    'amount_zscore', 'geographic_risk'
+]
+
+# Process multiple days
+results_list = []
+for i in range(7):  # Last 7 days
+    target_date = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+    
+    daily_result = daily_fraud_clustering_workflow(
+        spark_df=your_spark_dataframe,
+        target_date=target_date,
+        feature_columns=feature_columns
+    )
+    
+    if daily_result:
+        results_list.append(daily_result)
+        
+        # Print daily alerts
+        print(f"\n=== {target_date} ===")
+        for alert in daily_result['alerts']:
+            print(f"{alert['type']}: {alert['description']}")
+
+# Visualize evolution
+evolution_fig, evolution_df = track_cluster_evolution(results_list)
+evolution_fig.show()
+
+# Visualize latest day
+if results_list:
+    latest_fig = visualize_daily_results(results_list[0])
+    latest_fig.show()
+"""
