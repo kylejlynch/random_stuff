@@ -43,7 +43,56 @@ Ensure your fraud dataset CSV file is in the project directory. The pipeline exp
 
 ## Usage
 
-### Quick Start (Batch File)
+### Option 1: DataFrame Usage (Programmatic)
+
+Work directly with pandas DataFrames in your Python code:
+
+```python
+import pandas as pd
+from dataframe_pipeline import analyze_fraud_dataframe
+
+# Load your fraud data into a DataFrame
+df = pd.read_csv('your_fraud_data.csv')
+
+# Quick analysis
+results = analyze_fraud_dataframe(
+    df,
+    feature_columns=['amt', 'lat', 'long', 'city_pop', 'unix_time'],
+    pca_components=8,
+    min_cluster_size=50,
+    output_html_path='my_clusters.html'
+)
+
+# Access results
+fraud_data = results['fraud_data']          # Filtered fraud transactions
+pca_results = results['pca_results']        # PCA-transformed data  
+clusters = results['clustering_results']    # Clustering labels and probabilities
+visualization = results['visualization']    # Interactive Plotly figure
+stats = results['cluster_stats']           # Clustering statistics
+```
+
+#### Step-by-Step DataFrame Analysis
+```python
+from dataframe_pipeline import DataFrameFraudClusteringPipeline
+
+# Initialize pipeline
+pipeline = DataFrameFraudClusteringPipeline(
+    pca_components=8,
+    hdbscan_min_cluster_size=50,
+    verbose=True
+)
+
+# Run step by step
+fraud_df = pipeline.prepare_fraud_data(df)
+pca_df = pipeline.run_pca_analysis(['amt', 'lat', 'long', 'city_pop'])
+clustering_df = pipeline.run_clustering_analysis()
+fig = pipeline.run_visualization('clusters.html')
+
+# Get summary
+summary = pipeline.get_cluster_summary()
+```
+
+### Option 2: Quick Start (Batch File)
 
 Simply double-click `run_fraud_clustering.bat` or run it from command line:
 
@@ -149,7 +198,9 @@ The pipeline generates several output files in the results directory:
 - `pca_analysis.py`: PCA analysis and dimensionality reduction
 - `hdbscan_clustering.py`: HDBSCAN clustering implementation  
 - `umap_visualization.py`: 3D UMAP visualization with interactive features
-- `fraud_clustering_pipeline.py`: Main orchestration script
+- `fraud_clustering_pipeline.py`: Main orchestration script (CSV-based)
+- `dataframe_pipeline.py`: DataFrame-based pipeline for programmatic use
+- `example_dataframe_usage.py`: Examples showing DataFrame usage patterns
 - `logging_config.py`: Centralized logging configuration and utilities
 - `config.py`: Configuration parameters
 - `run_fraud_clustering.bat`: Windows batch file for easy execution
