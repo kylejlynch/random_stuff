@@ -47,25 +47,40 @@ if /i "%create_venv%"=="y" (
 
 echo.
 echo Step 2: Installing packages from artifactory...
-echo Using artifactory-compatible versions to avoid scipy.sparse.coo_array error
+echo Trying artifactory versions (hdbscan 0.8.40 first, joblib separate)...
 echo.
 
 REM Install packages using artifactory requirements
 pip install -r requirements-artifactory.txt
 if %errorlevel% neq 0 (
-    echo WARNING: Installation with requirements file failed.
-    echo Trying individual package installation...
+    echo WARNING: Installation with hdbscan 0.8.40 failed.
+    echo This might be due to sklearn.externals.joblib or scipy.sparse.coo_array errors.
+    echo Trying fallback versions...
     echo.
     
-    REM Install packages individually with exact versions
+    REM Try fallback requirements with hdbscan 0.8.29 if available
+    if exist "requirements-artifactory-fallback.txt" (
+        pip install -r requirements-artifactory-fallback.txt
+        if %errorlevel% neq 0 (
+            goto individual_install
+        ) else (
+            goto test_install
+        )
+    )
+    
+    :individual_install
+    echo Trying individual package installation with safe versions...
+    echo.
+    
+    REM Install packages individually with conservative versions
     echo Installing core packages...
     pip install pandas==1.1.5 numpy==1.19.5 scipy==1.5.4
-    pip install scikit-learn==0.24.2 joblib
+    pip install scikit-learn==0.24.2 "joblib>=1.0.0,<1.2.0"
     
     echo Installing performance packages...
     pip install numba==0.53.1 llvmlite==0.36.0
     
-    echo Installing clustering packages (scipy 1.5.4 compatible)...
+    echo Installing clustering packages (most conservative - avoid both errors)...
     pip install hdbscan==0.8.27
     pip install umap-learn==0.5.8
     
@@ -78,6 +93,8 @@ if %errorlevel% neq 0 (
     pip install "importlib-metadata>=4.0.0" "typing-extensions>=4.0.0"
 )
 
+:test_install
+
 echo.
 echo Step 3: Testing installation...
 python -c "import pandas, numpy, scipy, sklearn, matplotlib, seaborn; print('Core packages imported successfully!')"
@@ -87,18 +104,38 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-REM Test clustering packages
+REM Test clustering packages with specific error detection
 python -c "
-import hdbscan, umap
-print('Clustering packages imported successfully!')
-print('hdbscan available')
-print('umap-learn version available')
+import sys
+try:
+    import hdbscan
+    print('SUCCESS: hdbscan imported successfully')
+except ImportError as e:
+    if 'sklearn.externals.joblib' in str(e):
+        print('ERROR: sklearn.externals.joblib issue - hdbscan version incompatible with sklearn 0.24.2')
+        print('Solution: Install joblib separately and use hdbscan 0.8.29+')
+        sys.exit(1)
+    elif 'coo_array' in str(e):
+        print('ERROR: scipy.sparse.coo_array issue - hdbscan version incompatible with scipy 1.5.4')  
+        print('Solution: Use hdbscan 0.8.27 or upgrade scipy to 1.8+')
+        sys.exit(1)
+    else:
+        print('ERROR: Other hdbscan import issue:', e)
+        sys.exit(1)
+
+try:
+    import umap
+    print('SUCCESS: umap-learn imported successfully')
+except ImportError as e:
+    print('WARNING: umap-learn import issue:', e)
+    
+print('All clustering packages working!')
 " 2>nul
 if %errorlevel% neq 0 (
-    echo WARNING: Clustering packages may have issues.
-    echo This could be due to binary compatibility problems.
+    echo WARNING: Clustering packages have compatibility issues.
+    echo Check the error messages above for specific solutions.
 ) else (
-    echo SUCCESS: All packages installed successfully!
+    echo SUCCESS: All packages installed and tested successfully!
 )
 
 echo.

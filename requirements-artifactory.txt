@@ -6,14 +6,19 @@ pandas==1.1.5
 numpy==1.19.5
 scipy==1.5.4
 scikit-learn==0.24.2
-joblib>=1.0.0
+
+# joblib must be installed separately (sklearn.externals.joblib was removed in sklearn 0.23+)
+joblib>=1.0.0,<1.2.0
 
 # Performance Dependencies (exact artifactory versions) 
 numba==0.53.1
 llvmlite==0.36.0
 
-# Clustering Libraries (scipy 1.5.4 compatible versions)
-hdbscan==0.8.27
+# Clustering Libraries 
+# HDBSCAN 0.8.40 available in artifactory but may have compatibility issues
+# Try 0.8.40 first, fallback to 0.8.29+ (fixes sklearn.externals.joblib)
+# If coo_array errors occur, use 0.8.27 (compatible with scipy 1.5.4)
+hdbscan==0.8.40
 umap-learn==0.5.8
 
 # Visualization (compatible with older scipy/numpy)

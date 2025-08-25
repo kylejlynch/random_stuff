@@ -1,0 +1,30 @@
+# Fraud Clustering Pipeline - Artifactory Fallback Requirements
+# Use this if hdbscan==0.8.40 has sklearn.externals.joblib errors
+
+# Core Data Processing (exact artifactory versions)
+pandas==1.1.5
+numpy==1.19.5
+scipy==1.5.4
+scikit-learn==0.24.2
+
+# joblib must be installed separately (sklearn.externals.joblib was removed in sklearn 0.23+)
+joblib>=1.0.0,<1.2.0
+
+# Performance Dependencies (exact artifactory versions) 
+numba==0.53.1
+llvmlite==0.36.0
+
+# Clustering Libraries - FALLBACK VERSIONS
+# Use older HDBSCAN that works with both scipy 1.5.4 AND sklearn 0.24.2
+# This avoids both coo_array AND sklearn.externals.joblib errors
+hdbscan==0.8.29
+umap-learn==0.5.8
+
+# Visualization (compatible with older scipy/numpy)
+plotly>=4.14.0,<5.0.0
+matplotlib>=3.2.0,<3.4.0
+seaborn>=0.10.0,<0.12.0
+
+# Python compatibility for older environments
+importlib-metadata>=4.0.0;python_version<"3.8"
+typing-extensions>=4.0.0;python_version<"3.8"
