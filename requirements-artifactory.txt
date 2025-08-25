@@ -1,0 +1,30 @@
+# Fraud Clustering Pipeline - Artifactory Compatible Requirements
+# Exact versions available in corporate artifactory
+
+# Core Data Processing (exact artifactory versions)
+pandas==1.1.5
+numpy==1.19.5
+scipy==1.5.4
+scikit-learn==0.24.2
+joblib>=1.0.0
+
+# Performance Dependencies (exact artifactory versions) 
+numba==0.53.1
+llvmlite==0.36.0
+
+# Clustering Libraries (scipy 1.5.4 compatible versions)
+hdbscan==0.8.27
+umap-learn==0.5.8
+
+# Visualization (compatible with older scipy/numpy)
+plotly>=4.14.0,<5.0.0
+matplotlib>=3.2.0,<3.4.0
+seaborn>=0.10.0,<0.12.0
+
+# Python compatibility for older environments
+importlib-metadata>=4.0.0;python_version<"3.8"
+typing-extensions>=4.0.0;python_version<"3.8"
+
+# Optional dependencies that may be available
+# pynndescent>=0.4.0  # Uncomment if available in artifactory
+# threadpoolctl>=2.0.0  # Uncomment if available in artifactory
