@@ -13,6 +13,18 @@ import plotly.offline as pyo
 import logging
 from logging_config import get_logger
 
+# Fix for UMAP PicklingError with collections.FlatTree
+# This is a known compatibility issue with pynndescent and certain environments
+try:
+    import collections
+    import pynndescent
+    # Workaround for PicklingError: Can't pickle <class 'collections.FlatTree'>
+    collections.namedtuple("n", [], module=__name__)
+    pynndescent.rp_trees.FlatTree.__module__ = "pynndescent.rp_trees"
+except (ImportError, AttributeError):
+    # If pynndescent is not available or already fixed, continue normally
+    pass
+
 class UMAPVisualizer:
     def __init__(self, n_components=3, n_neighbors=15, min_dist=0.1, random_state=42):
         """
@@ -78,7 +90,26 @@ class UMAPVisualizer:
             random_state=self.random_state
         )
         
-        self.embedding = self.umap_reducer.fit_transform(X_pca)
+        try:
+            # Attempt normal UMAP fitting
+            self.embedding = self.umap_reducer.fit_transform(X_pca)
+        except Exception as e:
+            if "PicklingError" in str(e) or "FlatTree" in str(e):
+                self.logger.warning("Encountered UMAP PicklingError, trying threading backend workaround...")
+                try:
+                    # Fallback using threading backend to avoid pickling issues
+                    from joblib import parallel_backend
+                    with parallel_backend('threading', n_jobs=1):
+                        self.embedding = self.umap_reducer.fit_transform(X_pca)
+                    self.logger.info("Successfully used threading backend workaround")
+                except ImportError:
+                    self.logger.error("joblib not available for threading backend workaround")
+                    raise e
+                except Exception as e2:
+                    self.logger.error(f"Threading backend workaround also failed: {e2}")
+                    raise e
+            else:
+                raise e
         
         self.logger.info(f"UMAP embedding shape: {self.embedding.shape}")
         return self.embedding

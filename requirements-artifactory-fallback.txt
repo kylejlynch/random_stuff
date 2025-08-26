@@ -20,6 +20,10 @@ llvmlite==0.36.0
 hdbscan==0.8.29
 umap-learn==0.5.8
 
+# UMAP dependency - pin to version that fixes PicklingError with collections.FlatTree
+# pynndescent 0.5.0+ resolves pickling issues with FlatTree
+pynndescent>=0.5.0
+
 # Visualization (compatible with older scipy/numpy)
 plotly>=4.14.0,<5.0.0
 matplotlib>=3.2.0,<3.4.0
