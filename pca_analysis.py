@@ -3,6 +3,10 @@ PCA Analysis Module for Fraud Transaction Clustering
 This module performs PCA on fraudulent transactions and saves the results to CSV.
 """
 
+# Import compatibility module first
+from compatibility import ensure_sklearn_compatibility
+ensure_sklearn_compatibility()
+
 import pandas as pd
 import numpy as np
 from sklearn.decomposition import PCA

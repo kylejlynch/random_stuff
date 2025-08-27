@@ -1,0 +1,35 @@
+name: fraud_clustering_work
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core data science packages - compatible versions for work environment
+  - pandas=1.1.5
+  - numpy=1.19.5
+  - scipy=1.5.4
+  - scikit-learn=0.24.2
+  
+  # Joblib and compatibility
+  - joblib>=1.0.0
+  - six
+  
+  # Numba and dependencies
+  - numba=0.53.1
+  - llvmlite=0.36.0
+  
+  # Clustering algorithms  
+  - hdbscan=0.8.20
+  - umap-learn=0.5.3
+  - pynndescent=0.5.13
+  
+  # Visualization packages
+  - matplotlib>=3.2.0,<3.4.0
+  - seaborn>=0.10.0,<0.12.0
+  
+  # Python and basic packages
+  - python>=3.6,<3.9
+  
+  # Additional dependencies from pip
+  - pip
+  - pip:
+      - plotly>=4.14.0,<5.0.0

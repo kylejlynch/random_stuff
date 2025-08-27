@@ -4,6 +4,10 @@ This module provides a convenient way to use the fraud clustering pipeline
 directly with pandas DataFrames instead of CSV files.
 """
 
+# Import compatibility module first
+from compatibility import ensure_sklearn_compatibility
+ensure_sklearn_compatibility()
+
 import pandas as pd
 import numpy as np
 import tempfile

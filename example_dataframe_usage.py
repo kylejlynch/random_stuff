@@ -4,6 +4,10 @@ This script demonstrates how to use the pipeline directly with DataFrames
 without needing to save/load CSV files.
 """
 
+# Import compatibility module first
+from compatibility import ensure_sklearn_compatibility
+ensure_sklearn_compatibility()
+
 import pandas as pd
 import numpy as np
 from dataframe_pipeline import DataFrameFraudClusteringPipeline, analyze_fraud_dataframe

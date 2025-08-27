@@ -11,6 +11,10 @@ Usage:
     python fraud_clustering_pipeline.py [options]
 """
 
+# Import compatibility module first
+from compatibility import ensure_sklearn_compatibility
+ensure_sklearn_compatibility()
+
 import argparse
 import os
 import sys

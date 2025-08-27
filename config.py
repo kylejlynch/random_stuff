@@ -23,7 +23,7 @@ PCA_FEATURES = [
 # HDBSCAN Clustering Configuration
 HDBSCAN_MIN_CLUSTER_SIZE = 50    # Minimum size of clusters
 HDBSCAN_MIN_SAMPLES = 10         # Minimum samples for core points
-HDBSCAN_CLUSTER_SELECTION_EPSILON = 0.0  # Distance threshold for cluster extraction
+# Note: cluster_selection_epsilon parameter not available in HDBSCAN 0.8.20
 
 # UMAP Visualization Configuration
 UMAP_N_NEIGHBORS = 15            # Number of neighbors for UMAP

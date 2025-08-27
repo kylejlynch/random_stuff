@@ -3,6 +3,10 @@ HDBSCAN Clustering Module for Fraud Transaction Analysis
 This module performs HDBSCAN clustering on PCA-transformed fraud data and saves clustering results.
 """
 
+# Import compatibility module first
+from compatibility import ensure_sklearn_compatibility
+ensure_sklearn_compatibility()
+
 import pandas as pd
 import numpy as np
 import hdbscan
@@ -13,18 +17,16 @@ import logging
 from logging_config import get_logger
 
 class HDBSCANClusterer:
-    def __init__(self, min_cluster_size=30, min_samples=10, cluster_selection_epsilon=0.0):
+    def __init__(self, min_cluster_size=30, min_samples=10):
         """
         Initialize HDBSCAN Clusterer
         
         Args:
             min_cluster_size (int): Minimum size of clusters
             min_samples (int): Minimum number of samples in a neighborhood for a point to be core
-            cluster_selection_epsilon (float): Distance threshold for cluster extraction
         """
         self.min_cluster_size = min_cluster_size
         self.min_samples = min_samples
-        self.cluster_selection_epsilon = cluster_selection_epsilon
         self.clusterer = None
         self.labels_ = None
         self.cluster_stats = {}
@@ -65,13 +67,11 @@ class HDBSCANClusterer:
         """
         self.logger.info("Fitting HDBSCAN clustering")
         self.logger.info(f"Parameters: min_cluster_size={self.min_cluster_size}, "
-                        f"min_samples={self.min_samples}, "
-                        f"cluster_selection_epsilon={self.cluster_selection_epsilon}")
+                        f"min_samples={self.min_samples}")
         
         self.clusterer = hdbscan.HDBSCAN(
             min_cluster_size=self.min_cluster_size,
             min_samples=self.min_samples,
-            cluster_selection_epsilon=self.cluster_selection_epsilon,
             metric='euclidean'
         )
         
@@ -280,8 +280,7 @@ if __name__ == "__main__":
     # Example usage
     clusterer = HDBSCANClusterer(
         min_cluster_size=50,    # Adjust based on dataset size
-        min_samples=10,         # Minimum samples for core points
-        cluster_selection_epsilon=0.0  # Use default cluster selection
+        min_samples=10          # Minimum samples for core points
     )
     
     # Run clustering
