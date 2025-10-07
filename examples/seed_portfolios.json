@@ -1,0 +1,8 @@
+[
+  {
+    "sql": "((income >= 20000.0 AND income <= 80000.0) AND (velocity_24h <= 3.0)) OR ((device_fraud_count >= 1.0))"
+  },
+  {
+    "sql": "((credit_risk_score <= 350.0) AND (bank_months_count >= 2.0) AND (bank_months_count <= 12.0))"
+  }
+]
